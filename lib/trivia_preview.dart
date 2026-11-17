@@ -32,6 +32,8 @@ class _TriviaPreviewState extends State<TriviaPreview> {
   final _attempts = AttemptRepository(FirebaseFirestore.instance);
   final _selections = <String>[];
 
+  TriviaFault _triviaFault = TriviaFault.none;
+
   List<TriviaQuestion> _questions = const [];
   String? _roundId;
   String? _requestError;
@@ -72,7 +74,8 @@ class _TriviaPreviewState extends State<TriviaPreview> {
     });
 
     try {
-      final questions = await _api.loadRound();
+      final fault = kDebugMode ? _triviaFault : TriviaFault.none;
+      final questions = await _api.loadRound(fault: fault);
       if (!mounted) return;
 
       final roundId = FirebaseFirestore.instance
@@ -289,6 +292,32 @@ class _TriviaPreviewState extends State<TriviaPreview> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (kDebugMode && _questions.isEmpty)
+          DropdownButton<TriviaFault>(
+            value: _triviaFault,
+            isExpanded: true,
+            items: const [
+              DropdownMenuItem(
+                value: TriviaFault.none,
+                child: Text('Live OpenTDB request'),
+              ),
+              DropdownMenuItem(
+                value: TriviaFault.badJson,
+                child: Text('Development test: bad JSON'),
+              ),
+              DropdownMenuItem(
+                value: TriviaFault.nonzeroApiCode,
+                child: Text('Development test: nonzero API code'),
+              ),
+              DropdownMenuItem(
+                value: TriviaFault.nineResults,
+                child: Text('Development test: nine results'),
+              ),
+            ],
+            onChanged: (value) {
+              if (value != null) setState(() => _triviaFault = value);
+            },
+          ),
         if (_requestError case final message?) ...[
           Text(
             message,

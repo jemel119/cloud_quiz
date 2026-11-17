@@ -22,6 +22,8 @@ class TriviaException implements Exception {
   final String message;
 }
 
+enum TriviaFault { none, badJson, nonzeroApiCode, nineResults }
+
 class TriviaApi {
   static final _url = Uri.parse(
     'https://opentdb.com/api.php?amount=10&category=9'
@@ -31,10 +33,13 @@ class TriviaApi {
   static const _requestInterval = Duration(seconds: 5);
   static final _requestClock = Stopwatch()..start();
   static final _decoder = HtmlUnescape();
+
   static Duration? _lastRequestStart;
   static bool _requestInProgress = false;
 
-  Future<List<TriviaQuestion>> loadRound() async {
+  Future<List<TriviaQuestion>> loadRound({
+    TriviaFault fault = TriviaFault.none,
+  }) async {
     if (_requestInProgress) {
       throw const TriviaException('A question request is already in progress.');
     }
@@ -49,9 +54,22 @@ class TriviaApi {
 
     _requestInProgress = true;
     _lastRequestStart = _requestClock.elapsed;
-    final client = http.Client();
+    http.Client? client;
 
     try {
+      final injectedBody = switch (fault) {
+        TriviaFault.none => null,
+        TriviaFault.badJson => '{invalid json',
+        TriviaFault.nonzeroApiCode => '{"response_code":1,"results":[]}',
+        TriviaFault.nineResults => jsonEncode({
+          'response_code': 0,
+          'results': List.filled(9, <String, Object>{}),
+        }),
+      };
+
+      if (injectedBody != null) return parseRound(injectedBody);
+
+      client = http.Client();
       final response = await client
           .get(_url)
           .timeout(const Duration(seconds: 10));
@@ -74,7 +92,7 @@ class TriviaApi {
         'OpenTDB returned unreadable data. Try again.',
       );
     } finally {
-      client.close();
+      client?.close();
       _requestInProgress = false;
     }
   }
@@ -100,7 +118,7 @@ class TriviaApi {
       );
     }
 
-    return List.unmodifiable(results.map(_parseQuestion));
+    return List<TriviaQuestion>.unmodifiable(results.map(_parseQuestion));
   }
 
   TriviaQuestion _parseQuestion(Object? entry) {
@@ -122,7 +140,7 @@ class TriviaApi {
 
     final text = _readText(entry['question']);
     final correct = _readText(entry['correct_answer']);
-    final choices = [correct, ...wrongAnswers.map(_readText)];
+    final choices = <String>[correct, ...wrongAnswers.map(_readText)];
 
     if (choices.toSet().length != 4) {
       throw const TriviaException(
@@ -139,6 +157,7 @@ class TriviaApi {
       final decoded = _decoder.convert(value).trim();
       if (decoded.isNotEmpty) return decoded;
     }
+
     throw const TriviaException(
       'A question or answer was missing or empty. Try again.',
     );
