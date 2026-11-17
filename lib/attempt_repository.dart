@@ -50,6 +50,8 @@ class SavedAttempt {
   final Timestamp submittedAt;
 }
 
+enum AttemptFault { none, unavailable, resourceExhausted }
+
 class AttemptRepository {
   AttemptRepository(this._firestore);
 
@@ -69,7 +71,24 @@ class AttemptRepository {
         .doc(roundId);
   }
 
-  Future<void> createOnce(QuizAttempt attempt) async {
+    Future<void> createOnce(
+    QuizAttempt attempt, {
+    AttemptFault fault = AttemptFault.none,
+  }) async {
+    final injectedCode = switch (fault) {
+      AttemptFault.none => null,
+      AttemptFault.unavailable => 'unavailable',
+      AttemptFault.resourceExhausted => 'resource-exhausted',
+    };
+
+    if (injectedCode != null) {
+      throw FirebaseException(
+        plugin: 'cloud_firestore',
+        code: injectedCode,
+        message: 'Development test: injected repository error.',
+      );
+    }
+
     final ref = reference(attempt);
     final payload = attempt.payload;
 

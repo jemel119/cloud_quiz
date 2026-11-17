@@ -1,11 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'attempt_repository.dart';
 import 'trivia_api.dart';
-
-import 'package:flutter/foundation.dart';
 
 enum SaveState {
   readyToSubmit,
@@ -28,11 +27,12 @@ class TriviaPreview extends StatefulWidget {
 }
 
 class _TriviaPreviewState extends State<TriviaPreview> {
+  static const _injectLostAcknowledgement =
+      kDebugMode && bool.fromEnvironment('INJECT_LOST_ACK');
+
   final _api = TriviaApi();
   final _attempts = AttemptRepository(FirebaseFirestore.instance);
   final _selections = <String>[];
-
-  TriviaFault _triviaFault = TriviaFault.none;
 
   List<TriviaQuestion> _questions = const [];
   String? _roundId;
@@ -41,21 +41,19 @@ class _TriviaPreviewState extends State<TriviaPreview> {
   int _questionIndex = 0;
   int _score = 0;
 
+  TriviaFault _triviaFault = TriviaFault.none;
+  AttemptFault _attemptFault = AttemptFault.none;
   SaveState _saveState = SaveState.readyToSubmit;
   QuizAttempt? _attempt;
   Timestamp? _verifiedAt;
   String? _cloudMessage;
 
-  static const _injectLostAcknowledgement =
-      kDebugMode && bool.fromEnvironment('INJECT_LOST_ACK');
-
-  bool get _roundComplete => _questionIndex == _questions.length;
-
-  bool get _saveBusy =>
-      _saveState == SaveState.submitting || _saveState == SaveState.verifying;
+  bool get _roundComplete =>
+      _questions.isNotEmpty && _questionIndex == _questions.length;
 
   bool get _saveUnresolved =>
-      _saveBusy ||
+      _saveState == SaveState.submitting ||
+      _saveState == SaveState.verifying ||
       _saveState == SaveState.saveUnknown ||
       _saveState == SaveState.verificationUnavailable;
 
@@ -92,6 +90,7 @@ class _TriviaPreviewState extends State<TriviaPreview> {
         _questionIndex = 0;
         _score = 0;
         _attempt = null;
+        _attemptFault = AttemptFault.none;
         _verifiedAt = null;
         _cloudMessage = null;
         _saveState = SaveState.readyToSubmit;
@@ -129,7 +128,8 @@ class _TriviaPreviewState extends State<TriviaPreview> {
   }
 
   Future<void> _submit() async {
-    if (_saveState != SaveState.readyToSubmit ||
+    if (_loading ||
+        _saveState != SaveState.readyToSubmit ||
         _roundId == null ||
         !_roundComplete ||
         FirebaseAuth.instance.currentUser?.uid != widget.uid) {
@@ -141,14 +141,16 @@ class _TriviaPreviewState extends State<TriviaPreview> {
       roundId: _roundId!,
       correctCount: _score,
     );
+    final fault = kDebugMode ? _attemptFault : AttemptFault.none;
 
     setState(() {
+      _attemptFault = AttemptFault.none;
       _saveState = SaveState.submitting;
       _cloudMessage = 'Submitting score…';
     });
 
     try {
-      await _attempts.createOnce(attempt);
+      await _attempts.createOnce(attempt, fault: fault);
     } on AttemptCollision {
       _showCloudResult(
         attempt,
@@ -161,13 +163,24 @@ class _TriviaPreviewState extends State<TriviaPreview> {
       final denied =
           error.code == 'permission-denied' || error.code == 'unauthenticated';
 
+      final detail = switch (error.code) {
+        'permission-denied' => 'Firestore denied this submission.',
+        'unauthenticated' =>
+          'Firestore could not authenticate this submission.',
+        'unavailable' => 'Firestore is unavailable. Check your connection.',
+        'resource-exhausted' => 'Firestore reported a usage limit.',
+        _ => 'The save could not be confirmed (${error.code}).',
+      };
+
+      final prefix = fault == AttemptFault.none
+          ? ''
+          : 'Development test (injected): ';
+      final recovery = denied ? '' : ' Check the same attempt on the server.';
+
       _showCloudResult(
         attempt,
         denied ? SaveState.permissionDenied : SaveState.saveUnknown,
-        denied
-            ? 'Firestore denied this submission (${error.code}).'
-            : 'Save could not be confirmed (${error.code}). '
-                  'Check the same attempt on the server.',
+        '$prefix$detail$recovery',
       );
       return;
     } catch (_) {
@@ -178,6 +191,7 @@ class _TriviaPreviewState extends State<TriviaPreview> {
       );
       return;
     }
+
     if (_injectLostAcknowledgement) {
       _showCloudResult(
         attempt,
@@ -187,6 +201,7 @@ class _TriviaPreviewState extends State<TriviaPreview> {
       );
       return;
     }
+
     await _verify(attempt);
   }
 
@@ -196,6 +211,10 @@ class _TriviaPreviewState extends State<TriviaPreview> {
     }
 
     final wasUnknown = _saveState == SaveState.saveUnknown;
+    final unresolvedState = wasUnknown
+        ? SaveState.saveUnknown
+        : SaveState.verificationUnavailable;
+
     setState(() {
       _saveState = SaveState.verifying;
       _cloudMessage = 'Checking the saved attempt on the server…';
@@ -239,15 +258,16 @@ class _TriviaPreviewState extends State<TriviaPreview> {
         'resource-exhausted' => 'Firestore reported a usage limit.',
         _ => 'The server read could not be confirmed.',
       };
+
       _showCloudResult(
         attempt,
-        wasUnknown ? SaveState.saveUnknown : SaveState.verificationUnavailable,
+        unresolvedState,
         '$detail Try checking the server again.',
       );
     } catch (_) {
       _showCloudResult(
         attempt,
-        wasUnknown ? SaveState.saveUnknown : SaveState.verificationUnavailable,
+        unresolvedState,
         'Verification unavailable. Check the server again.',
       );
     }
@@ -405,6 +425,28 @@ class _TriviaPreviewState extends State<TriviaPreview> {
               'Your answer: ${_selections[i]}\n'
               'Correct answer: ${_questions[i].correctAnswer}',
             ),
+          ),
+        if (kDebugMode && _saveState == SaveState.readyToSubmit)
+          DropdownButton<AttemptFault>(
+            value: _attemptFault,
+            isExpanded: true,
+            items: const [
+              DropdownMenuItem(
+                value: AttemptFault.none,
+                child: Text('Live Firestore submission'),
+              ),
+              DropdownMenuItem(
+                value: AttemptFault.unavailable,
+                child: Text('Inject Firestore unavailable'),
+              ),
+              DropdownMenuItem(
+                value: AttemptFault.resourceExhausted,
+                child: Text('Inject Firestore resource exhausted'),
+              ),
+            ],
+            onChanged: (value) {
+              if (value != null) setState(() => _attemptFault = value);
+            },
           ),
         FilledButton(
           onPressed: _saveState == SaveState.readyToSubmit ? _submit : null,
