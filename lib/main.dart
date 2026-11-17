@@ -9,6 +9,7 @@ import 'saved_attempt_lookup.dart';
 import 'package:flutter/foundation.dart';
 
 import 'attempt_experiment.dart';
+import 'attempt_rules_check.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -65,6 +66,11 @@ class _CloudQuizAppState extends State<CloudQuizApp> {
                   if (kDebugMode)
                     AttemptExperiment(
                       key: ValueKey('experiment-${user.uid}'),
+                      uid: user.uid,
+                    ),
+                  if (kDebugMode)
+                    AttemptRulesCheck(
+                      key: ValueKey('rules-check-${user.uid}'),
                       uid: user.uid,
                     ),
                 ],

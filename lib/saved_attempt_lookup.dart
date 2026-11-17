@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'attempt_repository.dart';
@@ -18,6 +19,7 @@ class _SavedAttemptLookupState extends State<SavedAttemptLookup> {
   final _repository = AttemptRepository(FirebaseFirestore.instance);
 
   bool _reading = false;
+  bool _holdNextResponse = false;
   String? _message;
   SavedAttempt? _saved;
 
@@ -29,7 +31,7 @@ class _SavedAttemptLookupState extends State<SavedAttemptLookup> {
 
   Future<void> _lookUp() async {
     final uid = widget.uid;
-    if (_reading || FirebaseAuth.instance.currentUser?.uid != uid) return;
+    if (_reading || !_isCurrentUser(uid)) return;
 
     final roundId = _roundId.text.trim();
     if (!RegExp(r'^[A-Za-z0-9]{20}$').hasMatch(roundId)) {
@@ -40,8 +42,12 @@ class _SavedAttemptLookupState extends State<SavedAttemptLookup> {
       return;
     }
 
+    final holdResponse = kDebugMode && _holdNextResponse;
+    final suffix = roundId.substring(roundId.length - 6);
+
     setState(() {
       _reading = true;
+      _holdNextResponse = false;
       _saved = null;
       _message = 'Reading the attempt from Firestore…';
     });
@@ -49,6 +55,35 @@ class _SavedAttemptLookupState extends State<SavedAttemptLookup> {
     try {
       final saved = await _repository.readSavedAttempt(uid, roundId);
       if (!_isCurrentUser(uid)) return;
+
+      if (holdResponse && saved != null) {
+        setState(() {
+          _message = 'Development test: holding server response for '
+              '…$suffix for 20 seconds. Switch accounts now.';
+        });
+        debugPrint('G03: holding verified response for round …$suffix.');
+
+        await Future<void>.delayed(const Duration(seconds: 20));
+
+        if (!_isCurrentUser(uid)) {
+          final currentUid = FirebaseAuth.instance.currentUser?.uid;
+          final authState = switch (currentUid) {
+            null => 'signed out',
+            final activeUid when activeUid == uid => 'original account',
+            _ => 'different account',
+          };
+          debugPrint(
+            'G03: discarded stale response for round …$suffix '
+            '(auth state: $authState).',
+          );
+          return;
+        }
+
+        debugPrint(
+          'G03: original session still active for round …$suffix. '
+          'Repeat the test and switch accounts during the hold.',
+        );
+      }
 
       setState(() {
         _saved = saved;
@@ -95,6 +130,14 @@ class _SavedAttemptLookupState extends State<SavedAttemptLookup> {
           onSubmitted: (_) => _lookUp(),
         ),
         const SizedBox(height: 8),
+        if (kDebugMode)
+          SwitchListTile(
+            title: const Text('Development test: hold next server response'),
+            value: _holdNextResponse,
+            onChanged: _reading
+                ? null
+                : (value) => setState(() => _holdNextResponse = value),
+          ),
         OutlinedButton(
           onPressed: _reading ? null : _lookUp,
           child: const Text('Read from server'),
