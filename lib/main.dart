@@ -6,6 +6,10 @@ import 'firebase_options.dart';
 import 'trivia_preview.dart';
 import 'saved_attempt_lookup.dart';
 
+import 'package:flutter/foundation.dart';
+
+import 'attempt_experiment.dart';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
@@ -58,6 +62,11 @@ class _CloudQuizAppState extends State<CloudQuizApp> {
                     key: ValueKey('lookup-${user.uid}'),
                     uid: user.uid,
                   ),
+                  if (kDebugMode)
+                    AttemptExperiment(
+                      key: ValueKey('experiment-${user.uid}'),
+                      uid: user.uid,
+                    ),
                 ],
               );
             },
