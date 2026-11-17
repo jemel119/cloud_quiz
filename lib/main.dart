@@ -51,7 +51,7 @@ class _CloudQuizAppState extends State<CloudQuizApp> {
                   const Text('Signed in'),
                   SelectableText('UID: ${user.uid}'),
                   const SizedBox(height: 16),
-                  TriviaPreview(key: ValueKey(user.uid)),
+                  TriviaPreview(key: ValueKey(user.uid), uid: user.uid),
                   const SizedBox(height: 16),
                   OutlinedButton(
                     onPressed: () async {
