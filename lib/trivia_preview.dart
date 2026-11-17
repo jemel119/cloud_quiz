@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'attempt_repository.dart';
 import 'trivia_api.dart';
 
+import 'package:flutter/foundation.dart';
+
 enum SaveState {
   readyToSubmit,
   submitting,
@@ -41,6 +43,9 @@ class _TriviaPreviewState extends State<TriviaPreview> {
   QuizAttempt? _attempt;
   Timestamp? _verifiedAt;
   String? _cloudMessage;
+
+  static const _injectLostAcknowledgement =
+      kDebugMode && bool.fromEnvironment('INJECT_LOST_ACK');
 
   bool get _roundComplete => _questionIndex == _questions.length;
 
@@ -170,7 +175,15 @@ class _TriviaPreviewState extends State<TriviaPreview> {
       );
       return;
     }
-
+    if (_injectLostAcknowledgement) {
+      _showCloudResult(
+        attempt,
+        SaveState.saveUnknown,
+        'Development test: save acknowledgement hidden. '
+        'Check the same attempt on the server.',
+      );
+      return;
+    }
     await _verify(attempt);
   }
 
@@ -189,6 +202,19 @@ class _TriviaPreviewState extends State<TriviaPreview> {
       final timestamp = await _attempts.verify(attempt);
       if (!_isCurrentAttempt(attempt)) return;
 
+      if (timestamp == null) {
+        _showCloudResult(
+          attempt,
+          wasUnknown
+              ? SaveState.readyToSubmit
+              : SaveState.verificationUnavailable,
+          wasUnknown
+              ? 'No attempt found on the server. Tap Submit to retry this round.'
+              : 'The acknowledged attempt could not be found. Check again.',
+        );
+        return;
+      }
+
       setState(() {
         _verifiedAt = timestamp;
         _saveState = SaveState.cloudVerified;
@@ -201,13 +227,25 @@ class _TriviaPreviewState extends State<TriviaPreview> {
         'The server returned different attempt data. '
         'The original attempt was preserved.',
       );
+    } on FirebaseException catch (error) {
+      final detail = switch (error.code) {
+        'permission-denied' => 'Firestore denied the server read.',
+        'unauthenticated' =>
+          'Firestore could not authenticate the server read.',
+        'unavailable' => 'Firestore is unavailable. Check your connection.',
+        'resource-exhausted' => 'Firestore reported a usage limit.',
+        _ => 'The server read could not be confirmed.',
+      };
+      _showCloudResult(
+        attempt,
+        wasUnknown ? SaveState.saveUnknown : SaveState.verificationUnavailable,
+        '$detail Try checking the server again.',
+      );
     } catch (_) {
       _showCloudResult(
         attempt,
         wasUnknown ? SaveState.saveUnknown : SaveState.verificationUnavailable,
-        wasUnknown
-            ? 'The save is still unconfirmed. Try checking the server again.'
-            : 'Verification unavailable. Check the server again.',
+        'Verification unavailable. Check the server again.',
       );
     }
   }

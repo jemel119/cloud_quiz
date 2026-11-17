@@ -70,17 +70,19 @@ class AttemptRepository {
     });
   }
 
-  Future<Timestamp> verify(QuizAttempt attempt) async {
+  /// Returns null only when the server confirms the document is absent.
+  Future<Timestamp?> verify(QuizAttempt attempt) async {
     final snapshot = await reference(attempt)
         .get(const GetOptions(source: Source.server));
-    final data = snapshot.data();
 
-    if (!snapshot.exists ||
-        data == null ||
-        snapshot.metadata.isFromCache ||
-        snapshot.metadata.hasPendingWrites) {
+    if (snapshot.metadata.isFromCache || snapshot.metadata.hasPendingWrites) {
       throw const VerificationUnavailable();
     }
+
+    if (!snapshot.exists) return null;
+
+    final data = snapshot.data();
+    if (data == null) throw const VerificationUnavailable();
 
     if (!attempt.matchesFixedFields(data)) {
       throw const AttemptCollision();
