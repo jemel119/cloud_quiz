@@ -1,7 +1,20 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'attempt_repository.dart';
 import 'trivia_api.dart';
+
+enum SaveState {
+  readyToSubmit,
+  submitting,
+  verifying,
+  cloudVerified,
+  saveUnknown,
+  permissionDenied,
+  verificationUnavailable,
+  collision,
+}
 
 class TriviaPreview extends StatefulWidget {
   const TriviaPreview({super.key, required this.uid});
@@ -14,6 +27,7 @@ class TriviaPreview extends StatefulWidget {
 
 class _TriviaPreviewState extends State<TriviaPreview> {
   final _api = TriviaApi();
+  final _attempts = AttemptRepository(FirebaseFirestore.instance);
   final _selections = <String>[];
 
   List<TriviaQuestion> _questions = const [];
@@ -23,10 +37,29 @@ class _TriviaPreviewState extends State<TriviaPreview> {
   int _questionIndex = 0;
   int _score = 0;
 
+  SaveState _saveState = SaveState.readyToSubmit;
+  QuizAttempt? _attempt;
+  Timestamp? _verifiedAt;
+  String? _cloudMessage;
+
   bool get _roundComplete => _questionIndex == _questions.length;
 
+  bool get _saveBusy =>
+      _saveState == SaveState.submitting || _saveState == SaveState.verifying;
+
+  bool get _saveUnresolved =>
+      _saveBusy ||
+      _saveState == SaveState.saveUnknown ||
+      _saveState == SaveState.verificationUnavailable;
+
+  bool _isCurrentAttempt(QuizAttempt attempt) =>
+      mounted &&
+      FirebaseAuth.instance.currentUser?.uid == attempt.uid &&
+      widget.uid == attempt.uid &&
+      _roundId == attempt.roundId;
+
   Future<void> _loadRound() async {
-    if (_loading) return;
+    if (_loading || _saveUnresolved) return;
 
     setState(() {
       _loading = true;
@@ -50,6 +83,10 @@ class _TriviaPreviewState extends State<TriviaPreview> {
         _selections.clear();
         _questionIndex = 0;
         _score = 0;
+        _attempt = null;
+        _verifiedAt = null;
+        _cloudMessage = null;
+        _saveState = SaveState.readyToSubmit;
       });
     } on TriviaException catch (error) {
       if (!mounted) return;
@@ -81,6 +118,121 @@ class _TriviaPreviewState extends State<TriviaPreview> {
     }
 
     setState(() => _questionIndex++);
+  }
+
+  Future<void> _submit() async {
+    if (_saveState != SaveState.readyToSubmit ||
+        _roundId == null ||
+        !_roundComplete ||
+        FirebaseAuth.instance.currentUser?.uid != widget.uid) {
+      return;
+    }
+
+    final attempt = _attempt ??= QuizAttempt(
+      uid: widget.uid,
+      roundId: _roundId!,
+      correctCount: _score,
+    );
+
+    setState(() {
+      _saveState = SaveState.submitting;
+      _cloudMessage = 'Submitting score…';
+    });
+
+    try {
+      await _attempts.createOnce(attempt);
+    } on AttemptCollision {
+      _showCloudResult(
+        attempt,
+        SaveState.collision,
+        'This round ID already has a different score. '
+        'The original attempt was preserved.',
+      );
+      return;
+    } on FirebaseException catch (error) {
+      final denied =
+          error.code == 'permission-denied' || error.code == 'unauthenticated';
+
+      _showCloudResult(
+        attempt,
+        denied ? SaveState.permissionDenied : SaveState.saveUnknown,
+        denied
+            ? 'Firestore denied this submission (${error.code}).'
+            : 'Save could not be confirmed (${error.code}). '
+                  'Check the same attempt on the server.',
+      );
+      return;
+    } catch (_) {
+      _showCloudResult(
+        attempt,
+        SaveState.saveUnknown,
+        'Save could not be confirmed. Check the same attempt on the server.',
+      );
+      return;
+    }
+
+    await _verify(attempt);
+  }
+
+  Future<void> _verify(QuizAttempt attempt) async {
+    if (!_isCurrentAttempt(attempt) || _saveState == SaveState.verifying) {
+      return;
+    }
+
+    final wasUnknown = _saveState == SaveState.saveUnknown;
+    setState(() {
+      _saveState = SaveState.verifying;
+      _cloudMessage = 'Checking the saved attempt on the server…';
+    });
+
+    try {
+      final timestamp = await _attempts.verify(attempt);
+      if (!_isCurrentAttempt(attempt)) return;
+
+      setState(() {
+        _verifiedAt = timestamp;
+        _saveState = SaveState.cloudVerified;
+        _cloudMessage = 'Cloud verified';
+      });
+    } on AttemptCollision {
+      _showCloudResult(
+        attempt,
+        SaveState.collision,
+        'The server returned different attempt data. '
+        'The original attempt was preserved.',
+      );
+    } catch (_) {
+      _showCloudResult(
+        attempt,
+        wasUnknown ? SaveState.saveUnknown : SaveState.verificationUnavailable,
+        wasUnknown
+            ? 'The save is still unconfirmed. Try checking the server again.'
+            : 'Verification unavailable. Check the server again.',
+      );
+    }
+  }
+
+  void _showCloudResult(QuizAttempt attempt, SaveState state, String message) {
+    if (!_isCurrentAttempt(attempt)) return;
+
+    setState(() {
+      _saveState = state;
+      _cloudMessage = message;
+    });
+  }
+
+  Future<void> _signOut() async {
+    if (_saveUnresolved) return;
+
+    try {
+      await FirebaseAuth.instance.signOut();
+    } on FirebaseAuthException {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not sign out. Try again.')),
+      );
+    }
   }
 
   @override
@@ -117,6 +269,11 @@ class _TriviaPreviewState extends State<TriviaPreview> {
             _buildReview(context)
           else
             _buildQuestion(context),
+        const SizedBox(height: 16),
+        OutlinedButton(
+          onPressed: _saveUnresolved ? null : _signOut,
+          child: const Text('Sign out'),
+        ),
       ],
     );
   }
@@ -182,9 +339,28 @@ class _TriviaPreviewState extends State<TriviaPreview> {
               'Correct answer: ${_questions[i].correctAnswer}',
             ),
           ),
-        const FilledButton(onPressed: null, child: Text('Submit')),
+        FilledButton(
+          onPressed: _saveState == SaveState.readyToSubmit ? _submit : null,
+          child: const Text('Submit'),
+        ),
+        if (_cloudMessage case final message?)
+          Semantics(liveRegion: true, child: Text(message)),
+        if (_saveState == SaveState.saveUnknown ||
+            _saveState == SaveState.verificationUnavailable)
+          OutlinedButton(
+            onPressed: () => _verify(_attempt!),
+            child: const Text('Check server again'),
+          ),
+        if (_verifiedAt case final timestamp?) ...[
+          SelectableText('Document: ${_attempts.reference(_attempt!).path}'),
+          Text(
+            'Server timestamp: ${timestamp.toDate().toUtc().toIso8601String()}',
+          ),
+        ],
         OutlinedButton(
-          onPressed: _requestError == null ? _loadRound : null,
+          onPressed: _requestError == null && !_saveUnresolved
+              ? _loadRound
+              : null,
           child: const Text('Replay'),
         ),
       ],

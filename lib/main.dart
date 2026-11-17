@@ -52,22 +52,6 @@ class _CloudQuizAppState extends State<CloudQuizApp> {
                   SelectableText('UID: ${user.uid}'),
                   const SizedBox(height: 16),
                   TriviaPreview(key: ValueKey(user.uid), uid: user.uid),
-                  const SizedBox(height: 16),
-                  OutlinedButton(
-                    onPressed: () async {
-                      try {
-                        await FirebaseAuth.instance.signOut();
-                      } on FirebaseAuthException {
-                        if (!context.mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Could not sign out. Try again.'),
-                          ),
-                        );
-                      }
-                    },
-                    child: const Text('Sign out'),
-                  ),
                 ],
               );
             },
@@ -114,6 +98,7 @@ class _SignInFormState extends State<SignInForm> {
       );
     } on FirebaseAuthException catch (error) {
       if (!mounted) return;
+
       setState(() {
         _error = switch (error.code) {
           'network-request-failed' =>
