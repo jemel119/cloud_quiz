@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'firebase_options.dart';
 import 'trivia_preview.dart';
+import 'saved_attempt_lookup.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -52,6 +53,11 @@ class _CloudQuizAppState extends State<CloudQuizApp> {
                   SelectableText('UID: ${user.uid}'),
                   const SizedBox(height: 16),
                   TriviaPreview(key: ValueKey(user.uid), uid: user.uid),
+                  TriviaPreview(key: ValueKey(user.uid), uid: user.uid),
+                  SavedAttemptLookup(
+                    key: ValueKey('lookup-${user.uid}'),
+                    uid: user.uid,
+                  ),
                 ],
               );
             },

@@ -38,17 +38,35 @@ class QuizAttempt {
   }
 }
 
+class SavedAttempt {
+  const SavedAttempt({
+    required this.path,
+    required this.correctCount,
+    required this.submittedAt,
+  });
+
+  final String path;
+  final int correctCount;
+  final Timestamp submittedAt;
+}
+
 class AttemptRepository {
   AttemptRepository(this._firestore);
 
   final FirebaseFirestore _firestore;
 
-  DocumentReference<Map<String, dynamic>> reference(QuizAttempt attempt) {
+  DocumentReference<Map<String, dynamic>> reference(QuizAttempt attempt) =>
+      _referenceFor(attempt.uid, attempt.roundId);
+
+  DocumentReference<Map<String, dynamic>> _referenceFor(
+    String uid,
+    String roundId,
+  ) {
     return _firestore
         .collection('users')
-        .doc(attempt.uid)
+        .doc(uid)
         .collection('attempts')
-        .doc(attempt.roundId);
+        .doc(roundId);
   }
 
   Future<void> createOnce(QuizAttempt attempt) async {
@@ -72,8 +90,20 @@ class AttemptRepository {
 
   /// Returns null only when the server confirms the document is absent.
   Future<Timestamp?> verify(QuizAttempt attempt) async {
-    final snapshot = await reference(attempt)
-        .get(const GetOptions(source: Source.server));
+    final saved = await readSavedAttempt(attempt.uid, attempt.roundId);
+    if (saved == null) return null;
+
+    if (saved.correctCount != attempt.fixedFields['correctCount']) {
+      throw const AttemptCollision();
+    }
+
+    return saved.submittedAt;
+  }
+
+  /// Returns null only when the server confirms the document is absent.
+  Future<SavedAttempt?> readSavedAttempt(String uid, String roundId) async {
+    final ref = _referenceFor(uid, roundId);
+    final snapshot = await ref.get(const GetOptions(source: Source.server));
 
     if (snapshot.metadata.isFromCache || snapshot.metadata.hasPendingWrites) {
       throw const VerificationUnavailable();
@@ -82,17 +112,29 @@ class AttemptRepository {
     if (!snapshot.exists) return null;
 
     final data = snapshot.data();
-    if (data == null) throw const VerificationUnavailable();
-
-    if (!attempt.matchesFixedFields(data)) {
-      throw const AttemptCollision();
-    }
-
-    final timestamp = data['submittedAt'];
-    if (data.length != 6 || timestamp is! Timestamp) {
+    if (data == null || data.length != 6) {
       throw const VerificationUnavailable();
     }
 
-    return timestamp;
+    final score = data['correctCount'];
+    final timestamp = data['submittedAt'];
+    if (score is! int || score < 0 || score > 10 || timestamp is! Timestamp) {
+      throw const VerificationUnavailable();
+    }
+
+    final expected = QuizAttempt(
+      uid: uid,
+      roundId: roundId,
+      correctCount: score,
+    );
+    if (!expected.matchesFixedFields(data)) {
+      throw const AttemptCollision();
+    }
+
+    return SavedAttempt(
+      path: ref.path,
+      correctCount: score,
+      submittedAt: timestamp,
+    );
   }
 }
